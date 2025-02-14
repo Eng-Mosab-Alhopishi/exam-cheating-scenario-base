@@ -1,0 +1,40 @@
+body {
+    font-family: Arial, sans-serif;
+    text-align: center;
+    background-color: #f4f4f4;
+}
+
+h1 {
+    color: #333;
+}
+
+video {
+    width: 640px;
+    height: 480px;
+    border: 2px solid #333;
+    margin-top: 10px;
+}
+
+canvas {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    top: 80px;
+    border: 2px solid red;
+}
+
+#alert-box {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: red;
+    color: white;
+    padding: 15px;
+    border-radius: 5px;
+    font-size: 18px;
+    display: none;
+}
+
+.hidden {
+    display: none;
+}

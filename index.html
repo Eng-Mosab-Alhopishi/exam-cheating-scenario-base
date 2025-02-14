@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>مراقبة الطالب أثناء الاختبار</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="libs/mediapipe/face_mesh.js"></script>
+    <script src="libs/mediapipe/camera_utils.js"></script>
+</head>
+<body>
+    <h1>نظام مراقبة الطالب أثناء الاختبار</h1>
+    <video id="video" autoplay playsinline></video>
+    <canvas id="canvas"></canvas>
+    <div id="alert-box" class="hidden"></div>
+    <script src="script.js"></script>
+    <div id="stats">
+        <p id="blink-count">عدد الغمزات: 0</p>
+        <p id="mouth-open-count">عدد مرات فتح الفم: 0</p>
+        <p id="head-turn-count">عدد مرات التفات الرأس: 0</p>
+        <div id="mouth-open-count"></div>
+        <div id="head-turn-left-count"></div>
+        <div id="head-turn-right-count"></div>
+        <div id="head-tilt-up-count"></div>
+        <div id="head-tilt-down-count"></div>
+
+    </div>
+</body>
+</html>
