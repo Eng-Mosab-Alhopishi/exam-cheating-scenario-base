@@ -76,7 +76,7 @@ async function startFaceTracking() {
             if (now - lastBlinkTime > 1000) {  // إذا مر أكثر من ثانية منذ آخر غمزة
                 blinkCounter++;
                 lastBlinkTime = now;
-                showTemporaryAlert("⚠️ الطالب يغمض عينيه لفترة طويلة! هل هو نائم؟ 💤", 3000);
+                showTemporaryAlert("⚠️ الطالب يغمض عينيه لفترة طويلة!", 3000);
             }
         }
 
@@ -91,7 +91,7 @@ async function startFaceTracking() {
             if (now - lastMouthOpenTime > 3000) {  // **فتح الفم لأكثر من 3 ثوانٍ**
                 mouthOpenCounter++;
                 lastMouthOpenTime = now;
-                showTemporaryAlert("⚠️ الطالب يتحدث أثناء الامتحان! هل هو يغش؟ 📢", 3000);
+                showTemporaryAlert("⚠️ الطالب يتحدث أثناء الامتحان! ", 3000);
             }
         }
 
