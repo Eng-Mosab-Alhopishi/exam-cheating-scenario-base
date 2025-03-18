@@ -1,272 +1,249 @@
-async function startFaceTracking() {
-    const videoElement = document.getElementById("video");
-    const canvasElement = document.getElementById("canvas");
-    const canvasCtx = canvasElement.getContext("2d");
-    const alertBox = document.getElementById("alert-box");
+class FaceTracker {
+    constructor(videoElement, canvasElement, alertBox) {
+        this.videoElement = videoElement;
+        this.canvasElement = canvasElement;
+        this.canvasCtx = canvasElement.getContext("2d");
+        this.alertBox = alertBox;
 
-    // إعداد FaceMesh
-    const faceMesh = new FaceMesh({
-        locateFile: (file) => `libs/mediapipe/${file}`
-    });
+        this.faceMesh = new FaceMesh({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+        });
 
-    faceMesh.setOptions({
-        maxNumFaces: 1,
-        refineLandmarks: true,
-        minDetectionConfidence: 0.9,  // دقة أعلى
-        minTrackingConfidence: 0.9
-    });
+        this.faceMesh.setOptions({
+            maxNumFaces: 1,
+            refineLandmarks: true,
+            minDetectionConfidence: 0.9,
+            minTrackingConfidence: 0.9
+        });
 
-    let lastBlinkTime = Date.now();
-    let lastMouthOpenTime = Date.now();
-    let blinkCounter = 0;
-    let mouthOpenCounter = 0;
-    let headTurnLeftCounter = 0;   // عداد التفت يسارا
-    let headTurnRightCounter = 0;  // عداد التفت يمينا
-    let headTiltUpCounter = 0;     // عداد ميل الرأس للأعلى
-    let headTiltDownCounter = 0;   // عداد ميل الرأس للأسفل
+        this.faceMesh.onResults((results) => this.onResults(results));
 
-    // حالة الرأس السابقة
-    let previousHeadState = 'stable';  // يمكن أن تكون 'left', 'right', 'up', 'down', أو 'stable'
-    let lastHeadMovementTime = Date.now();  // لتجنب تسجيل التفات متكرر
+        this.initializeModules();
+        this.startCamera();
+    }
 
-    // تنبيهات مؤقتة لتجنب التنبيهات المتكررة
-    let isAlertShown = false;
-    let alertTimeout;
+    initializeModules() {
+        this.headTracker = new HeadTracker(this);
+        this.mouthTracker = new MouthTracker(this);
+        this.presenceTracker = new PresenceTracker(this);
+    }
 
-    // مؤقت لتحديد ما إذا كان الوجه قد اختفى بالفعل
-    let faceLostTime = null;
-    const FACE_LOST_THRESHOLD = 2000;  // 2 ثانية قبل أن نعتبر أن الوجه غير موجود
+    async startCamera() {
+        this.camera = new Camera(this.videoElement, {
+            onFrame: async () => {
+                await this.faceMesh.send({ image: this.videoElement });
+            },
+            width: 640,
+            height: 480
+        });
+        await this.camera.start();
+    }
 
-    faceMesh.onResults(results => {
-        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+    onResults(results) {
+        this.canvasCtx.clearRect(0, 0, this.canvasElement.width, this.canvasElement.height);
 
-        // التحقق من وجود الوجه باستخدام نقاط أساسية
-        if (!isFaceVisible(results.multiFaceLandmarks)) {
-            if (faceLostTime === null) {
-                faceLostTime = Date.now();  // بدء المؤقت عند فقدان الوجه
-            }
+        if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+            this.presenceTracker.checkPresence(results.multiFaceLandmarks);
+            this.headTracker.trackHead(results.multiFaceLandmarks);
+            this.mouthTracker.trackMouth(results.multiFaceLandmarks);
 
-            // إذا مر أكثر من FACE_LOST_THRESHOLD منذ فقدان الوجه
-            if (Date.now() - faceLostTime > FACE_LOST_THRESHOLD) {
-                showAlert("🚨 الطالب غير موجود أمام الكاميرا!");
-                return;
+            // رسم النقاط على الوجه
+            for (const landmarks of results.multiFaceLandmarks) {
+                this.drawFaceLandmarks(landmarks);
             }
         } else {
-            faceLostTime = null;  // إعادة ضبط المؤقت إذا تم اكتشاف الوجه مرة أخرى
+            // Handle case when no face is detected
+            this.presenceTracker.checkPresence([]);
+            this.updateStats({
+                headLeft: this.headTracker.counters.left,
+                headRight: this.headTracker.counters.right,
+                headUp: this.headTracker.counters.up,
+                headDown: this.headTracker.counters.down,
+                mouthOpen: this.mouthTracker.mouthOpenCounter,
+                facePresence: "غير موجود"
+            });
         }
+    }
 
-        const faceLandmarks = results.multiFaceLandmarks[0];
-
-        // التحقق من أن faceLandmarks ليست فارغة قبل الوصول إلى النقاط
-        if (!faceLandmarks) {
-            return;
+    drawFaceLandmarks(landmarks) {
+        this.canvasCtx.fillStyle = "blue";
+        for (const landmark of landmarks) {
+            this.canvasCtx.beginPath();
+            this.canvasCtx.arc(
+                landmark.x * this.canvasElement.width,
+                landmark.y * this.canvasElement.height,
+                2, 0, 2 * Math.PI
+            );
+            this.canvasCtx.fill();
         }
+    }
 
-        // 👀 **تحليل العين**
-        const leftEyeUpper = faceLandmarks[159];  // الجفن العلوي
-        const leftEyeLower = faceLandmarks[145];  // الجفن السفلي
-        const rightEyeUpper = faceLandmarks[386];
-        const rightEyeLower = faceLandmarks[374];
-        const leftEyeHeight = Math.abs(leftEyeUpper.y - leftEyeLower.y);
-        const rightEyeHeight = Math.abs(rightEyeUpper.y - rightEyeLower.y);
-        const eyeThreshold = 0.015;  // **تم ضبطه ليكون أكثر دقة**
+    showAlert(message, duration = 3000) {
+        this.alertBox.textContent = message;
+        this.alertBox.style.display = "block";
+        setTimeout(() => {
+            this.alertBox.style.display = "none";
+        }, duration);
+    }
 
-        if (leftEyeHeight < eyeThreshold && rightEyeHeight < eyeThreshold) {
-            const now = Date.now();
-            if (now - lastBlinkTime > 1000) {  // إذا مر أكثر من ثانية منذ آخر غمزة
-                blinkCounter++;
-                lastBlinkTime = now;
-                showTemporaryAlert("⚠️ الطالب يغمض عينيه لفترة طويلة!", 3000);
-            }
+    updateStats(stats) {
+        document.getElementById("head-turn-left-count").textContent = `عدد مرات التفت يسارًا: ${stats.headLeft}`;
+        document.getElementById("head-turn-right-count").textContent = `عدد مرات التفت يمينًا: ${stats.headRight}`;
+        document.getElementById("head-tilt-up-count").textContent = `عدد مرات الميل للأعلى: ${stats.headUp}`;
+        document.getElementById("head-tilt-down-count").textContent = `عدد مرات الميل للأسفل: ${stats.headDown}`;
+        document.getElementById("mouth-open-count").textContent = `عدد مرات فتح الفم: ${stats.mouthOpen}`;
+        document.getElementById("face-presence-count").textContent = `حالة الوجه: ${stats.facePresence}`;
+    }
+}
+
+class HeadTracker {
+    constructor(faceTracker) {
+        this.faceTracker = faceTracker;
+        this.counters = { left: 0, right: 0, up: 0, down: 0 };
+        this.previousHeadState = 'stable';
+        this.lastHeadMovementTime = Date.now();
+
+        this.yawFilter = new KalmanFilter();
+        this.pitchFilter = new KalmanFilter();
+    }
+
+    trackHead(faceLandmarks) {
+        const noseTip = faceLandmarks[0][1];      // طرف الأنف
+        const leftEye = faceLandmarks[0][33];    // العين اليسرى
+        const rightEye = faceLandmarks[0][263];  // العين اليمنى
+        const leftCheek = faceLandmarks[0][234]; // الخد الأيسر
+        const rightCheek = faceLandmarks[0][454]; // الخد الأيمن
+        const forehead = faceLandmarks[0][10];   // الجبهة
+        const chin = faceLandmarks[0][152];      // الذقن
+
+        // حساب زاوية الالتفات (Yaw)
+        const eyeCenterX = (leftEye.x + rightEye.x) / 2;
+        const faceWidth = Math.abs(leftEye.x - rightEye.x);
+        const turnRatio = (noseTip.x - eyeCenterX) / faceWidth;
+        const yaw = this.yawFilter.update(turnRatio);
+
+        // حساب الميل الرأسي (Pitch)
+        const verticalDistance = this.calculateDistance(forehead, chin);
+        const nosePosition = (noseTip.y - forehead.y) / verticalDistance;
+        const pitch = this.pitchFilter.update(nosePosition);
+
+        // تحديد حالة الرأس الحالية
+        const currentHeadState = this.determineHeadState(yaw, pitch);
+
+        // تسجيل الحركة إذا كانت تتجاوز العتبة
+        if (currentHeadState !== this.previousHeadState && Date.now() - this.lastHeadMovementTime > 2000) {
+            this.handleHeadMovement(currentHeadState);
+            this.previousHeadState = currentHeadState;
+            this.lastHeadMovementTime = Date.now();
         }
-
-        // 👄 **تحليل الفم**
-        const upperLip = faceLandmarks[13];  // الشفة العلوية
-        const lowerLip = faceLandmarks[14];  // الشفة السفلية
-        const mouthHeight = Math.abs(upperLip.y - lowerLip.y);
-        const mouthThreshold = 0.03;  // **تم ضبطه ليكون أكثر دقة**
-
-        if (mouthHeight > mouthThreshold) {
-            const now = Date.now();
-            if (now - lastMouthOpenTime > 3000) {  // **فتح الفم لأكثر من 3 ثوانٍ**
-                mouthOpenCounter++;
-                lastMouthOpenTime = now;
-                showTemporaryAlert("⚠️ الطالب يتحدث أثناء الامتحان! ", 3000);
-            }
-        }
-
-        // 🔄 **تحليل التفات الرأس باستخدام تقارب النقاط**
-        const noseTip = faceLandmarks[1];      // طرف الأنف
-        const leftCheek = faceLandmarks[234];  // الخد الأيسر
-        const rightCheek = faceLandmarks[454]; // الخد الأيمن
-        const forehead = faceLandmarks[10];    // نقطة على الجبهة
-        const chin = faceLandmarks[152];       // الذقن
-
-        // حساب المسافات بين الأنف والجهتين اليمنى واليسرى
-        const distanceToRightCheek = calculateDistance(noseTip, rightCheek);
-        const distanceToLeftCheek = calculateDistance(noseTip, leftCheek);
-
-        // حساب المسافات بين الأنف والجزء العلوي والسفلي
-        const distanceToForehead = calculateDistance(noseTip, forehead);
-        const distanceToChin = calculateDistance(noseTip, chin);
-
-        // تحديد حالة الرأس الحالية بناءً على المسافات
-        let currentHeadState = 'stable';
-
-        const horizontalThreshold = 0.05;  // **عتبة المسافة الأفقية**
-        const verticalThreshold = 0.05;   // **عتبة المسافة العمودية**
-
-        if (distanceToRightCheek < distanceToLeftCheek - horizontalThreshold) {
-            currentHeadState = 'right';
-        } else if (distanceToLeftCheek < distanceToRightCheek - horizontalThreshold) {
-            currentHeadState = 'left';
-        } else if (distanceToForehead < distanceToChin - verticalThreshold) {
-            currentHeadState = 'up';
-        } else if (distanceToChin < distanceToForehead - verticalThreshold) {
-            currentHeadState = 'down';
-        }
-
-        // إذا تغيرت حالة الرأس، نسجل التفت جديد
-        const now = Date.now();
-        if (currentHeadState !== previousHeadState && now - lastHeadMovementTime > 2000) {  // 2 ثانية بين كل تفت
-            switch (currentHeadState) {
-                case 'left':
-                    headTurnLeftCounter++;
-                    showTemporaryAlert(`⚠️ الطالب يلفت رأسه يسارًا!`, 3000);
-                    break;
-                case 'right':
-                    headTurnRightCounter++;
-                    showTemporaryAlert(`⚠️ الطالب يلفت رأسه يمينًا!`, 3000);
-                    break;
-                case 'up':
-                    headTiltUpCounter++;
-                    showTemporaryAlert(`⚠️ الطالب يميل رأسه للأعلى!`, 3000);
-                    break;
-                case 'down':
-                    headTiltDownCounter++;
-                    showTemporaryAlert(`⚠️ الطالب يميل رأسه للأسفل!`, 3000);
-                    break;
-            }
-
-            // تحديث حالة الرأس ووقت آخر تفت
-            previousHeadState = currentHeadState;
-            lastHeadMovementTime = now;
-        }
-
-        // **🔵 رسم النقاط على الوجه**
-        drawFaceLandmarks(faceLandmarks, canvasCtx);
 
         // تحديث الإحصائيات
-        updateStats(blinkCounter, mouthOpenCounter, headTurnLeftCounter, headTurnRightCounter, headTiltUpCounter, headTiltDownCounter);
-    });
-
-    // دالة للتحقق من وجود الوجه باستخدام نقاط أساسية
-    function isFaceVisible(multiFaceLandmarks) {
-        if (!multiFaceLandmarks || multiFaceLandmarks.length === 0) {
-            return false;
-        }
-
-        const faceLandmarks = multiFaceLandmarks[0];
-
-        // قائمة بالنقاط الأساسية التي يجب التحقق منها
-        const essentialPoints = [1, 10, 152, 13, 14, 159, 145, 386, 374, 234, 454];
-
-        // التحقق من وجود النقاط الأساسية
-        for (const index of essentialPoints) {
-            const point = faceLandmarks[index];
-            if (!point || isNaN(point.x) || isNaN(point.y)) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    // دالة لحساب المسافة بين نقطتين
-    function calculateDistance(point1, point2) {
-        const dx = point2.x - point1.x;
-        const dy = point2.y - point1.y;
-        return Math.sqrt(dx * dx + dy * dy);
-    }
-
-    // دالة لعرض التنبيهات المؤقتة
-    function showTemporaryAlert(message, duration) {
-        if (!isAlertShown) {
-            isAlertShown = true;
-            showAlert(message);
-            alertTimeout = setTimeout(() => {
-                hideAlert();
-                isAlertShown = false;
-            }, duration);
-        }
-    }
-
-    function showAlert(message) {
-        alertBox.textContent = message;
-        alertBox.style.display = "block";
-    }
-
-    function hideAlert() {
-        alertBox.style.display = "none";
-    }
-
-    // دالة لرسم النقاط على الوجه
-    function drawFaceLandmarks(faceLandmarks, ctx) {
-        ctx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-
-        // رسم نقاط العين باللون الأخضر
-        drawPoints([159, 145, 386, 374], faceLandmarks, ctx, "green");
-
-        // رسم نقاط الفم باللون الأحمر
-        drawPoints([13, 14], faceLandmarks, ctx, "red");
-
-        // رسم نقاط الأنف والخدين باللون الأصفر
-        drawPoints([1, 234, 454], faceLandmarks, ctx, "yellow");
-
-        // رسم نقاط الجبهة والذقن باللون البرتقالي
-        drawPoints([10, 152], faceLandmarks, ctx, "orange");
-
-        // رسم باقي النقاط باللون الأزرق
-        for (const landmark of faceLandmarks) {
-            ctx.beginPath();
-            ctx.arc(landmark.x * canvasElement.width, landmark.y * canvasElement.height, 2, 0, 2 * Math.PI);
-            ctx.fillStyle = "blue";
-            ctx.fill();
-        }
-    }
-
-    // دالة لرسم نقاط معينة بلون محدد
-    function drawPoints(indices, landmarks, ctx, color) {
-        indices.forEach(index => {
-            const landmark = landmarks[index];
-            if (landmark) {  // التحقق من أن النقطة موجودة
-                ctx.beginPath();
-                ctx.arc(landmark.x * canvasElement.width, landmark.y * canvasElement.height, 3, 0, 2 * Math.PI);
-                ctx.fillStyle = color;
-                ctx.fill();
-            }
+        this.faceTracker.updateStats({
+            headLeft: this.counters.left,
+            headRight: this.counters.right,
+            headUp: this.counters.up,
+            headDown: this.counters.down,
+            mouthOpen: this.faceTracker.mouthTracker.mouthOpenCounter,
+            facePresence: faceLandmarks.length > 0 ? "موجود" : "غير موجود"
         });
     }
 
-    // دالة لتحديث الإحصائيات
-    function updateStats(blinkCount, mouthOpenCount, headTurnLeftCount, headTurnRightCount, headTiltUpCount, headTiltDownCount) {
-        document.getElementById("blink-count").textContent = `عدد الغمزات: ${blinkCount}`;
-        document.getElementById("mouth-open-count").textContent = `عدد مرات فتح الفم: ${mouthOpenCount}`;
-        document.getElementById("head-turn-left-count").textContent = `عدد مرات التفت يسارًا: ${headTurnLeftCount}`;
-        document.getElementById("head-turn-right-count").textContent = `عدد مرات التفت يمينًا: ${headTurnRightCount}`;
-        document.getElementById("head-tilt-up-count").textContent = `عدد مرات ميل الرأس للأعلى: ${headTiltUpCount}`;
-        document.getElementById("head-tilt-down-count").textContent = `عدد مرات ميل الرأس للأسفل: ${headTiltDownCount}`;
+    determineHeadState(yaw, pitch) {
+        const yawThreshold = 0.2;  // عتبة الالتفات (يمين/يسار)
+        const upThreshold = -0.4;  // عتبة الميل لأعلى
+        const downThreshold = 0.7; // عتبة الميل لأسفل (زيادة الحساسية)
+
+        if (yaw > yawThreshold) return 'right';
+        if (yaw < -yawThreshold) return 'left';
+        if (pitch < upThreshold) return 'up';
+        if (pitch > downThreshold) return 'down';
+        return 'stable';
     }
 
-    // بدء الكاميرا
-    const camera = new Camera(videoElement, {
-        onFrame: async () => {
-            await faceMesh.send({ image: videoElement });
-        },
-        width: 640,
-        height: 480
-    });
-    camera.start();
+    handleHeadMovement(state) {
+        this.counters[state]++;
+        switch(state) {
+            case 'right':
+                this.faceTracker.showAlert("⚠️ يلتفت لليمين، هل ينظر إلى زميله؟");
+                break;
+            case 'left':
+                this.faceTracker.showAlert("⚠️ يلتفت لليسار، هل يحاول الغش؟");
+                break;
+            case 'down':
+                this.faceTracker.showAlert("⚠️ الرأس مائل للأسفل بشكل مريب!");
+                break;
+            case 'up':
+                this.faceTracker.showAlert("⚠️ الرأس مائل للأعلى!");
+        }
+    }
+
+    calculateDistance(point1, point2) {
+        return Math.sqrt((point1.x - point2.x) ** 2 + (point1.y - point2.y) ** 2);
+    }
 }
 
-startFaceTracking().catch(error => console.error("🚨 خطأ في تتبع الوجه:", error));
+class MouthTracker {
+    constructor(faceTracker) {
+        this.faceTracker = faceTracker;
+        this.mouthOpenCounter = 0;
+        this.lastMouthOpenTime = Date.now();
+    }
+
+    trackMouth(faceLandmarks) {
+        const upperLip = faceLandmarks[0][13];
+        const lowerLip = faceLandmarks[0][14];
+        const mouthHeight = Math.abs(upperLip.y - lowerLip.y);
+
+        if (mouthHeight > 0.03 && Date.now() - this.lastMouthOpenTime > 3000) {
+            this.mouthOpenCounter++;
+            this.lastMouthOpenTime = Date.now();
+            this.faceTracker.showAlert("⚠️ الفم مفتوح بشكل غير طبيعي!");
+        }
+    }
+}
+
+class PresenceTracker {
+    constructor(faceTracker) {
+        this.faceTracker = faceTracker;
+        this.faceLostTime = null;
+    }
+
+    checkPresence(faceLandmarks) {
+        if (faceLandmarks.length === 0) {
+            if (this.faceLostTime === null) this.faceLostTime = Date.now();
+            if (Date.now() - this.faceLostTime > 2000) {
+                this.faceTracker.showAlert("🚨 الوجه غير موجود!");
+            }
+        } else {
+            this.faceLostTime = null;
+        }
+    }
+}
+
+class KalmanFilter {
+    constructor() {
+        this.Q = 0.01; // ضوضاء العملية
+        this.R = 0.1;  // ضوضاء القياس
+        this.P = 1;
+        this.X = 0;
+    }
+
+    update(measurement) {
+        // Prediction
+        this.P += this.Q;
+
+        // Update
+        const K = this.P / (this.P + this.R);
+        this.X += K * (measurement - this.X);
+        this.P *= (1 - K);
+
+        return this.X;
+    }
+}
+
+// بدء التتبع
+const videoElement = document.getElementById("video");
+const canvasElement = document.getElementById("canvas");
+const alertBox = document.getElementById("alert-box");
+
+const faceTracker = new FaceTracker(videoElement, canvasElement, alertBox);

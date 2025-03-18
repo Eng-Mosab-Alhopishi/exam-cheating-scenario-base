@@ -38,3 +38,8 @@ canvas {
 .hidden {
     display: none;
 }
+
+p {
+    margin-top: 10px;
+    font-size: 16px;
+}
